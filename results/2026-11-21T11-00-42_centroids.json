@@ -1,0 +1,12 @@
+{
+  "name": "centroids",
+  "accuracy": 0.6768,
+  "parameters": 0,
+  "train_seconds": 7.8,
+  "date": "2026-11-21T11:00:42+00:00",
+  "code_url": "https://github.com/dewansa/undefined-fashion/blob/bfb3fd714ce5d870d44ff786cc20c0c5c3a9beef/submissions/centroids/model.py",
+  "model_bytes": 31360,
+  "train_flops": 0,
+  "predict_flops": 15680,
+  "uncounted_ops": []
+}

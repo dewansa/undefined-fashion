@@ -1,0 +1,12 @@
+{
+  "name": "baseline",
+  "accuracy": 0.7856,
+  "parameters": 50890,
+  "train_seconds": 148.4,
+  "date": "2026-11-21T10:48:24+00:00",
+  "code_url": "https://github.com/dewansa/undefined-fashion/blob/bfb3fd714ce5d870d44ff786cc20c0c5c3a9beef/submissions/baseline/model.py",
+  "model_bytes": 203560,
+  "train_flops": 224870400000,
+  "predict_flops": 101632,
+  "uncounted_ops": []
+}
