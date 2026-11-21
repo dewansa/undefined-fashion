@@ -1,7 +1,8 @@
 # Runs after the teacher merges a pull request into main.
 # 1. "find": which submission folders changed.
-# 2. "score": trains them and measures them. It runs student code, so it only gets
-#    read access. Skipped when no submission changed.
+# 2. "score": trains them and measures them, then trains them once more to count their
+#    compute (FLOPs). It runs student code, so it only gets read access. Skipped when
+#    no submission changed.
 # 3. "publish": saves the results to the repo as reviewed rows, removes the
 #    "not reviewed" rows of merged or closed pull requests, and updates the website.
 name: Score and publish
@@ -55,7 +56,9 @@ jobs:
     needs: find
     if: needs.find.outputs.names != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # --flops trains each submission a second time inside the FLOP counter (up to 30
+    # minutes more for each one), so this job gets more time than the pull request check.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
         with:
@@ -83,7 +86,7 @@ jobs:
         run: |
           folders=()
           for name in $NAMES; do folders+=("submissions/$name"); done
-          uv run score "${folders[@]}" --save new-results
+          uv run score "${folders[@]}" --flops --save new-results
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
         with:

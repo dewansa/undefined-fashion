@@ -6,13 +6,22 @@ a shirt, a sneaker, a bag, and so on. Then see how you rank against your classma
 **Leaderboard:** https://dewansa.github.io/undefined-fashion/
 
 Every model is scored on 10,000 test images it has never seen. The leaderboard shows
-three numbers for each submission:
+four numbers for each submission:
 
 - **Test accuracy:** how many test images the model labels correctly. Higher is better.
 - **Parameters:** how many numbers the model learns by gradient descent. Smaller is neater.
   Values stored with `register_buffer` (for example, class averages) are not counted, so a
   model can have 0.
+- **Compute:** how much arithmetic your `train()` function did, counted in FLOPs
+  (floating-point operations). One multiply or add is one FLOP, so 225 GFLOP is
+  225 billion. It counts the matrix multiplies and convolutions of every forward and
+  backward pass, and skips cheap steps such as ReLU. Unlike time, it is the same on
+  every computer. Your code is not changed to count it: the counter only watches.
 - **Training time:** how long your `train()` function ran on GitHub's computer.
+
+The chart on the leaderboard draws a line through the **best trade-offs**: submissions
+that no other submission beats on both accuracy and cost (compute, time or parameters).
+A small, cheap model can be on that line too.
 
 ## What you need
 
@@ -45,6 +54,12 @@ three numbers for each submission:
    ```
 
    The first run downloads the images (about 30 MB) into `data/`.
+   To also see your compute, add `--flops`. That trains your model a second time,
+   and counting makes training a few times slower:
+
+   ```sh
+   uv run score submissions/<your-github-name> --flops
+   ```
 
 5. **Open a pull request** from your fork. GitHub checks your code, then trains and
    scores your model. Fix anything the check complains about. Before you push, you can
@@ -62,7 +77,8 @@ three numbers for each submission:
    request, the teacher may need to approve the run before it starts.)
 
 7. **Wait for the teacher to merge it.** After the merge, GitHub scores your model once
-   more and your row becomes *reviewed*. Want to try again? Open a new pull request.
+   more, counts its compute, and your row becomes *reviewed*. Rows that are not reviewed
+   show no compute yet. Want to try again? Open a new pull request.
    Every merged submission keeps its own row, so your earlier scores stay.
 
 ## The rules
@@ -129,13 +145,18 @@ anything that reads the test images (`train=False`), downloads files, or changes
 outside the student's folder. Merging is what makes a score *reviewed*.
 
 **After a merge:** the "Score and publish" workflow trains every submission that changed
-again, saves a JSON file per submission in `results/`, removes the pull request's
+again, then trains it once more inside a FLOP counter to measure its compute. Counting
+slows training down 2 to 6 times, so it is a separate run with its own 30-minute limit,
+and the training time on the leaderboard comes from the first run. If counting does not
+finish, the row has no compute. The workflow saves a JSON file per submission in `results/`, removes the pull request's
 *not reviewed* row, and updates the leaderboard. If a
 submission fails, the run shows a red cross and the log says why. The other submissions
 are still published.
 
 **Scoring again:** in the Actions tab, open "Score and publish", click "Run workflow" and
-type a folder name, or `all` to score every submission again.
+type a folder name, or `all` to score every submission again. Each run adds new rows.
+Rows from before compute was counted show "—" for it: score them again, then delete
+the old rows' files if you want only the new ones.
 
 **Removing a row:** delete its file from `results/` and push. That push updates the website.
 

@@ -14,8 +14,10 @@ from fashion.score import (
     Result,
     SubmissionError,
     accuracy,
+    count_flops,
     count_parameters,
     load_train_function,
+    readable_flops,
     save,
     train_with_time_limit,
 )
@@ -84,11 +86,54 @@ def test_perfect_model_scores_one() -> None:
     assert accuracy(AlwaysRight(), test_set) == 1.0
 
 
+def one_training_step(train_set):
+    images, labels = train_set.tensors
+    model = nn.Sequential(nn.Flatten(), nn.Linear(784, 10))
+    nn.functional.cross_entropy(model(images), labels).backward()
+    return model
+
+
+def test_flops_of_one_training_step() -> None:
+    # Forward: 20 images times a 784x10 matrix, 2 FLOPs (multiply, add) per weight.
+    # Backward: the same again for the weight gradient. The images need no gradient.
+    forward = 2 * 20 * 784 * 10
+    assert count_flops(one_training_step, fake_images(20)) == 2 * forward
+
+
+def test_counting_does_not_change_the_model() -> None:
+    plain, _ = train_with_time_limit(one_training_step, fake_images())
+    count_flops(one_training_step, fake_images())
+    counted, _ = train_with_time_limit(one_training_step, fake_images())
+    assert torch.equal(plain[1].weight, counted[1].weight)
+
+
+def test_flops_are_none_when_counting_takes_too_long() -> None:
+    def slow_train(train_set):
+        time.sleep(5)
+        return nn.Linear(1, 1)
+
+    assert count_flops(slow_train, fake_images(), limit=0.5) is None
+
+
+def test_readable_flops() -> None:
+    assert readable_flops(0) == "0 FLOP"
+    assert readable_flops(224_900_000_000) == "225 GFLOP"
+    assert readable_flops(3_272_000_000_000) == "3.3 TFLOP"
+
+
 def test_save_writes_one_json_file(tmp_path: Path) -> None:
     result = Result("alice", 0.9, 1000, 12.3, "2026-01-02T03:04:05+00:00")
     path = save(result, tmp_path)
     assert path.name == "2026-01-02T03-04-05_alice.json"
     assert json.loads(path.read_text())["accuracy"] == 0.9
+    assert json.loads(path.read_text())["train_flops"] is None  # not counted
+
+
+def test_pull_request_result_file_is_accepted(tmp_path: Path) -> None:
+    # What the pull request check saves (no --flops) must pass the leaderboard's checks.
+    result = Result("alice", 0.9, 1000, 12.3, "2026-01-02T03:04:05+00:00")
+    raw = json.loads(save(result, tmp_path).read_text())
+    assert check_result(raw, {"alice"})["accuracy"] == 0.9
 
 
 def test_wrong_output_shape_is_an_error_not_a_score() -> None:
