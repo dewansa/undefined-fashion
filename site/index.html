@@ -36,7 +36,7 @@
     a { color: var(--accent); }
     .scroll { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+    th, td { padding: 8px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
     th { cursor: pointer; user-select: none; font-weight: 600; }
     th:hover { color: var(--accent); }
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -109,7 +109,7 @@
           <th data-key="accuracy" class="num">Test accuracy</th>
           <th data-key="parameters" class="num">Parameters</th>
           <th data-key="train_flops" class="num" title="Arithmetic operations (FLOPs) during train()">Compute</th>
-          <th data-key="train_seconds" class="num">Training time</th>
+          <th data-key="train_seconds" class="num" title="Training time">Time</th>
           <th data-key="date">Date (UTC)</th>
           <th data-key="reviewed">Status</th>
         </tr>
@@ -237,11 +237,11 @@
       chart.querySelector("svg")?.remove();
       tip.hidden = true;
 
-      // Rows scored before compute was measured have no FLOPs, so they cannot be placed.
+      // Rows without a compute count (older rows, or not counted yet) cannot be placed.
       const shown = all.filter((r) => r[metric] != null);
       const missing = all.length - shown.length;
       note.hidden = missing === 0;
-      note.textContent = `${missing} ${missing === 1 ? "row was" : "rows were"} scored before compute was measured and ${missing === 1 ? "is" : "are"} not on the chart.`;
+      note.textContent = `${missing} ${missing === 1 ? "row has" : "rows have"} no compute count yet, so ${missing === 1 ? "it is" : "they are"} not on the chart.`;
       if (shown.length === 0) return;
 
       const width = chart.clientWidth;
