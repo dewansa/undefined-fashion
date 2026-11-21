@@ -56,6 +56,8 @@
     .chart .dot.off { fill: var(--muted); opacity: 0.6; }
     .chart .dot.off.pending { fill: var(--bg); stroke: var(--muted); opacity: 1; }
     .chart .frontier { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0.5; }
+    .chart .label { fill: var(--text); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; }
+    .chart .label.off { fill: var(--muted); }
     .chart .zero { stroke: var(--line); stroke-dasharray: 3 3; }
     .switch { display: inline-flex; margin: 4px 0 12px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
     .switch label { margin: 0; padding: 4px 12px; font-size: 14px; }
@@ -89,7 +91,7 @@
      accuracy and cost. <em>Compute</em> counts the arithmetic (FLOPs) your <code>train()</code> did.
      Unlike time, it is the same on every computer.
      <span class="key">●</span> reviewed, <span class="key">○</span> not reviewed.
-     Point at a dot to see whose it is, and click it to see the code.</p>
+     Point at a dot for details, and click it to see the code.</p>
   <div class="switch" role="radiogroup" aria-label="Cost shown on the chart">
     <label><input type="radio" name="metric" value="train_flops" checked> Compute</label>
     <label><input type="radio" name="metric" value="train_seconds"> Training time</label>
@@ -181,6 +183,50 @@
         if (best.length === 0 || r.accuracy > best.at(-1).accuracy) best.push(r);
       }
       return best;
+    }
+
+    // Names next to the dots, so nobody has to point at them (hard on a phone).
+    // Most important first: the best trade-offs, then the most accurate. A name that would
+    // cover another name, a dot or the chart's edge is left out; the tooltip and table still have it.
+    function labelDots(plot, shown, best, x, y, area, obstacles) {
+      const taken = obstacles.map((t) => t.getBBox());
+      shown.forEach((r) => taken.push({ x: x(r[metric]) - 6, y: y(r.accuracy * 100) - 6, width: 12, height: 12 }));
+      // Dots on (almost) the same spot share one label.
+      const groups = [];
+      const others = shown.filter((r) => !best.includes(r)).sort((a, b) => b.accuracy - a.accuracy);
+      [...best, ...others].forEach((r) => {
+        const cx = x(r[metric]);
+        const cy = y(r.accuracy * 100);
+        const near = groups.find((g) => Math.abs(g.cx - cx) < 4 && Math.abs(g.cy - cy) < 4);
+        if (!near) groups.push({ cx, cy, names: [r.name], onLine: best.includes(r) });
+        else if (!near.names.includes(r.name)) near.names.push(r.name);
+      });
+      const overlaps = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+      groups.forEach((g) => {
+        const text = svg("text", { class: g.onLine ? "label" : "label off" });
+        text.textContent = g.names.join(", ");
+        plot.append(text);
+        const right = [g.cx + 9, g.cy + 4, "start"];
+        const left = [g.cx - 9, g.cy + 4, "end"];
+        const above = [g.cx, g.cy - 10, "middle"];
+        const below = [g.cx, g.cy + 19, "middle"];
+        // The line leaves a best trade-off to the right, so try above and left of those first.
+        const spots = g.onLine ? [above, left, below, right] : [right, left, above, below];
+        const fits = spots.some(([sx, sy, anchor]) => {
+          text.setAttribute("x", sx);
+          text.setAttribute("y", sy);
+          text.setAttribute("text-anchor", anchor);
+          const box = text.getBBox();
+          const inside = box.x >= area.left && box.x + box.width <= area.right && box.y >= area.top && box.y + box.height <= area.bottom;
+          return inside && !taken.some((t) => overlaps(box, t));
+        });
+        if (fits) {
+          const { x: bx, y: by, width, height } = text.getBBox();
+          taken.push({ x: bx, y: by, width, height });
+        } else {
+          text.remove();
+        }
+      });
     }
 
     function drawChart(all) {
@@ -291,7 +337,9 @@
         point.addEventListener("blur", hide);
         plot.append(point);
       });
-      chart.prepend(plot);
+      chart.prepend(plot);  // in the page first, so the labels can be measured
+      const area = { left: margin.left, right, top: 0, bottom: height - margin.bottom };
+      labelDots(plot, shown, best, x, y, area, [yTitle]);
     }
 
     function render() {
