@@ -4,8 +4,8 @@ Run it like this:
 
     uv run score submissions/<your-github-name>
 
-Add `--flops` to also count the training compute (FLOPs). That trains each
-submission a second time, so it takes longer.
+Add `--flops` to also count the compute (FLOPs): of training, and of labelling
+each test image. That trains each submission a second time, so it takes longer.
 
 GitHub runs the same command on pull requests and after merges, with `--save`
 to keep the results for the leaderboard. After merges it also adds `--flops`.
@@ -23,13 +23,15 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import BuiltinFunctionType, FunctionType, MethodType, ModuleType
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.flop_counter import FlopCounterMode
 
 from fashion import data
+from fashion.flops import Count, counting
+from fashion.leaderboard import readable_bytes
 
 TIME_LIMIT_SECONDS = 10 * 60
 # Counting slows training down 2 to 6 times, so the counting run gets more time.
@@ -50,7 +52,10 @@ class Result:
     train_seconds: float
     date: str
     code_url: str | None = None
+    model_bytes: int | None = None  # memory the returned model holds on to
     train_flops: int | None = None  # None when compute was not counted
+    predict_flops: int | None = None  # per test image; None when not counted
+    uncounted_ops: list[str] | None = None  # heavy-looking ops the counter skipped
 
 
 def load_train_function(folder: Path) -> TrainFunction:
@@ -110,6 +115,43 @@ def train_with_time_limit(
     return model, seconds
 
 
+def model_bytes(model: nn.Module) -> int:
+    """How much memory the model holds on to, in bytes.
+
+    Parameters count, and so do buffers and any other tensor the model keeps: in a
+    plain attribute, a list, a dict, or another object it points to. A model that
+    stores the training images is as big as those images. Tensors that share memory
+    are counted once.
+    """
+    seen_objects: set[int] = set()
+    seen_memory: set[tuple[str, int]] = set()
+    total = 0
+    todo: list[object] = [model]
+    while todo:
+        obj = todo.pop()
+        if id(obj) in seen_objects:
+            continue
+        seen_objects.add(id(obj))
+        if isinstance(obj, torch.Tensor):
+            try:
+                storage = obj.untyped_storage()
+                key, size = (str(storage.device), storage.data_ptr()), storage.nbytes()
+            except RuntimeError, NotImplementedError:  # sparse tensors have no single storage
+                key, size = (str(obj.device), id(obj)), obj.numel() * obj.element_size()
+            if key not in seen_memory:
+                seen_memory.add(key)
+                total += size
+        elif isinstance(obj, dict):
+            todo.extend(obj.values())
+        elif isinstance(obj, (list, tuple, set, frozenset)):
+            todo.extend(obj)
+        elif hasattr(obj, "__dict__") and not isinstance(
+            obj, (type, ModuleType, FunctionType, MethodType, BuiltinFunctionType)
+        ):
+            todo.extend(vars(obj).values())
+    return total
+
+
 def count_parameters(model: nn.Module) -> int:
     """How many numbers the model learns by gradient descent (its parameters).
 
@@ -120,7 +162,7 @@ def count_parameters(model: nn.Module) -> int:
 
 def count_flops(
     train: TrainFunction, train_set: Dataset, limit: float = COUNT_LIMIT_SECONDS
-) -> int | None:
+) -> Count | None:
     """Train again inside PyTorch's FLOP counter and return the training compute.
 
     The counter adds up the floating-point operations of every matrix multiply and
@@ -131,14 +173,13 @@ def count_flops(
     Counting slows training down, so this is a separate run from the timed one, with
     its own limit. If it does not finish, the result has no compute (None).
     """
-    counter = FlopCounterMode(display=False)
     try:
-        with counter:
+        with counting() as count:
             train_with_time_limit(train, train_set, limit)
     except SubmissionError as error:
         print(f"Could not count the compute: {error}", file=sys.stderr)
         return None
-    return counter.get_total_flops()
+    return count
 
 
 def readable_flops(flops: int) -> str:
@@ -187,16 +228,30 @@ def score(folder: Path, limit: float = TIME_LIMIT_SECONDS, flops: bool = False) 
     train_set = data.train_set()
     test_set = data.test_set()
     model, seconds = train_with_time_limit(train, train_set, limit)
+    if flops:
+        # Labelling the test images is counted too: a model can be cheap to train
+        # and costly to use, like one that compares each image with every training image.
+        with counting() as predicted:
+            test_accuracy = accuracy(model, test_set)
+    else:
+        test_accuracy = accuracy(model, test_set)
     result = Result(
         name=folder.name,
-        accuracy=round(accuracy(model, test_set), 4),
+        accuracy=round(test_accuracy, 4),
         parameters=count_parameters(model),
         train_seconds=round(seconds, 1),
         date=datetime.now(UTC).isoformat(timespec="seconds"),
         code_url=code_url(folder.name),
+        model_bytes=model_bytes(model),
     )
     if flops:
-        result.train_flops = count_flops(train, train_set)
+        result.predict_flops = round(predicted.flops / len(test_set))
+        trained = count_flops(train, train_set)
+        uncounted = predicted.uncounted
+        if trained is not None:
+            result.train_flops = trained.flops
+            uncounted = trained.uncounted + uncounted
+        result.uncounted_ops = sorted(uncounted)
     return result
 
 
@@ -216,7 +271,8 @@ def main() -> None:
     parser.add_argument(
         "--flops",
         action="store_true",
-        help="also count the training compute (FLOPs); trains each submission a second time",
+        help="also count the compute (FLOPs) of training and of labelling each test image; "
+        "trains each submission a second time",
     )
     args = parser.parse_args()
 
@@ -233,9 +289,18 @@ def main() -> None:
         print(f"Submission:     {result.name}")
         print(f"Test accuracy:  {result.accuracy:.2%}")
         print(f"Parameters:     {result.parameters:,}")
+        print(f"Model size:     {readable_bytes(result.model_bytes or 0)}")
         print(f"Training time:  {result.train_seconds:.0f} seconds")
         if result.train_flops is not None:
-            print(f"Compute:        {readable_flops(result.train_flops)}")
+            print(f"Compute:        {readable_flops(result.train_flops)} to train")
+        if result.predict_flops is not None:
+            print(f"                {readable_flops(result.predict_flops)} per test image")
+        if result.uncounted_ops:
+            print(
+                f"Not counted:    {', '.join(result.uncounted_ops)}\n"
+                "                These ran but have no FLOP formula. If they do heavy math,\n"
+                "                the compute above is too low."
+            )
         if args.save:
             print(f"Saved to:       {save(result, args.save)}")
 

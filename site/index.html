@@ -59,7 +59,7 @@
     .chart .label { fill: var(--text); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; }
     .chart .label.off { fill: var(--muted); }
     .chart .zero { stroke: var(--line); stroke-dasharray: 3 3; }
-    .switch { display: inline-flex; margin: 4px 0 12px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .switch { display: inline-flex; flex-wrap: wrap; max-width: 100%; margin: 4px 0 12px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
     .switch label { margin: 0; padding: 4px 12px; font-size: 14px; }
     .switch label + label { border-left: 1px solid var(--line); }
     .switch input { position: absolute; opacity: 0; pointer-events: none; }
@@ -89,13 +89,19 @@
   <p>Each dot is one row of the table. The top left is best: high accuracy for little cost.
      The line joins the <strong>best trade-offs</strong>: rows that no other row beats on both
      accuracy and cost. <em>Compute</em> counts the arithmetic (FLOPs) your <code>train()</code> did.
-     Unlike time, it is the same on every computer.
+     Unlike time, it is the same on every computer. <em>Compute per image</em> counts the arithmetic
+     to label one test image, after training. <em>Model size</em> is all the memory the trained model
+     holds on to: its parameters, and anything else it stores, such as saved training images.
+     A compute count marked <span class="key">*</span> may be too low: the code ran operations the
+     counter has no formula for. Point at it to see which.
      <span class="key">●</span> reviewed, <span class="key">○</span> not reviewed.
      Point at a dot for details, and click it to see the code.</p>
   <div class="switch" role="radiogroup" aria-label="Cost shown on the chart">
     <label><input type="radio" name="metric" value="train_flops" checked> Compute</label>
-    <label><input type="radio" name="metric" value="train_seconds"> Training time</label>
+    <label><input type="radio" name="metric" value="predict_flops"> Per image</label>
+    <label><input type="radio" name="metric" value="train_seconds"> Time</label>
     <label><input type="radio" name="metric" value="parameters"> Parameters</label>
+    <label><input type="radio" name="metric" value="model_bytes"> Size</label>
   </div>
   <div class="chart" id="chart"><div class="tip" id="tip" hidden></div></div>
   <p class="note" id="chart-note" hidden></p>
@@ -106,15 +112,17 @@
         <tr>
           <th class="num" title="Rank by test accuracy">#</th>
           <th data-key="name">Student</th>
-          <th data-key="accuracy" class="num">Test accuracy</th>
+          <th data-key="accuracy" class="num" title="Test accuracy">Accuracy</th>
           <th data-key="parameters" class="num">Parameters</th>
+          <th data-key="model_bytes" class="num" title="Memory the trained model holds on to">Size</th>
           <th data-key="train_flops" class="num" title="Arithmetic operations (FLOPs) during train()">Compute</th>
+          <th data-key="predict_flops" class="num" title="Arithmetic operations (FLOPs) to label one test image">Per image</th>
           <th data-key="train_seconds" class="num" title="Training time">Time</th>
-          <th data-key="date">Date (UTC)</th>
+          <th data-key="date" title="Point at a date for the time (UTC)">Date</th>
           <th data-key="reviewed">Status</th>
         </tr>
       </thead>
-      <tbody id="rows"><tr><td colspan="8">Loading…</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="10">Loading…</td></tr></tbody>
     </table>
   </div>
 
@@ -166,11 +174,34 @@
       return n === 0 ? "≈ 0" : short(n) + "FLOP";
     }
 
+    function dateCell(date) {
+      const td = cell(date.slice(0, 10));
+      td.title = date.slice(0, 16).replace("T", " ") + " UTC";
+      return td;
+    }
+
+    function bytes(n) {
+      if (n == null) return "—";
+      return n < 1000 ? n + " B" : short(n) + "B";
+    }
+
+    // A compute cell, marked with * when the counter skipped ops that may do heavy math.
+    function computeCell(r, n) {
+      const td = cell(flops(n), "num");
+      if (n != null && r.uncounted_ops?.length) {
+        td.textContent += " *";
+        td.title = "May be too low. Not counted: " + r.uncounted_ops.join(", ");
+      }
+      return td;
+    }
+
     // What the chart's x-axis can show. Log scales spread out values that differ 1000-fold.
     const METRICS = {
-      train_flops: { title: "Compute (FLOPs, log scale)", log: true, tick: short, tip: (r) => flops(r.train_flops) },
+      train_flops: { title: "Compute (FLOPs, log scale)", log: true, tick: short, tip: (r) => flops(r.train_flops) + " to train" },
+      predict_flops: { title: "Compute per test image (FLOPs, log scale)", log: true, tick: short, tip: (r) => flops(r.predict_flops) + " per image" },
       train_seconds: { title: "Training time (seconds)", log: false, tick: String, tip: (r) => Math.round(r.train_seconds) + " s" },
       parameters: { title: "Parameters (log scale)", log: true, tick: short, tip: (r) => r.parameters.toLocaleString("en-US") + " parameters" },
+      model_bytes: { title: "Model size (bytes, log scale)", log: true, tick: short, tip: (r) => bytes(r.model_bytes) },
     };
     let metric = "train_flops";
 
@@ -237,11 +268,11 @@
       chart.querySelector("svg")?.remove();
       tip.hidden = true;
 
-      // Rows without a compute count (older rows, or not counted yet) cannot be placed.
+      // Rows without this number (older rows, or compute not counted yet) cannot be placed.
       const shown = all.filter((r) => r[metric] != null);
       const missing = all.length - shown.length;
       note.hidden = missing === 0;
-      note.textContent = `${missing} ${missing === 1 ? "row has" : "rows have"} no compute count yet, so ${missing === 1 ? "it is" : "they are"} not on the chart.`;
+      note.textContent = `${missing} ${missing === 1 ? "row has" : "rows have"} no ${m.title.split(" (")[0].toLowerCase()} yet, so ${missing === 1 ? "it is" : "they are"} not on the chart.`;
       if (shown.length === 0) return;
 
       const width = chart.clientWidth;
@@ -322,6 +353,9 @@
           name.textContent = r.name;
           tip.append(name, document.createElement("br"),
             `${(r.accuracy * 100).toFixed(2)}% with ${m.tip(r)}`);
+          if (metric.endsWith("_flops") && r.uncounted_ops?.length) {
+            tip.append(document.createElement("br"), "* may be too low: " + r.uncounted_ops.join(", ") + " not counted");
+          }
           if (onLine) tip.append(document.createElement("br"), "a best trade-off");
           if (!r.reviewed) tip.append(document.createElement("br"), "not reviewed");
           tip.hidden = false;
@@ -375,9 +409,11 @@
           name,
           cell((r.accuracy * 100).toFixed(2) + "%", "num"),
           cell(r.parameters.toLocaleString("en-US"), "num"),
-          cell(flops(r.train_flops), "num"),
+          cell(bytes(r.model_bytes), "num"),
+          computeCell(r, r.train_flops),
+          computeCell(r, r.predict_flops),
           cell(Math.round(r.train_seconds) + " s", "num"),
-          cell(r.date.slice(0, 16).replace("T", " ")),
+          dateCell(r.date),
         );
         const status = cell("");
         const badge = document.createElement("span");
@@ -387,7 +423,7 @@
         tr.append(status);
         body.append(tr);
       });
-      if (rows.length === 0) body.innerHTML = "<tr><td colspan='8'>No scores yet.</td></tr>";
+      if (rows.length === 0) body.innerHTML = "<tr><td colspan='10'>No scores yet.</td></tr>";
     }
 
     document.getElementById("show-pending").addEventListener("change", render);
@@ -425,7 +461,7 @@
         render();
       })
       .catch(() => {
-        document.getElementById("rows").innerHTML = "<tr><td colspan='8'>Could not load the results.</td></tr>";
+        document.getElementById("rows").innerHTML = "<tr><td colspan='10'>Could not load the results.</td></tr>";
       });
   </script>
 </body>
