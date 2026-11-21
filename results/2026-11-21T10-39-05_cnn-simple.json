@@ -1,0 +1,12 @@
+{
+  "name": "cnn-simple",
+  "accuracy": 0.9272,
+  "parameters": 44858,
+  "train_seconds": 57.6,
+  "date": "2026-11-21T10:39:05+00:00",
+  "code_url": "https://github.com/dewansa/undefined-fashion/blob/53f43e3a29d15c0ba3497367ee346a379789826f/submissions/cnn-simple/model.py",
+  "model_bytes": 180352,
+  "train_flops": 1630540800000,
+  "predict_flops": 674688,
+  "uncounted_ops": []
+}
