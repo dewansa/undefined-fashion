@@ -27,10 +27,13 @@ MAX_FILES = 10
 MAX_FILE_BYTES = 10_000
 MAX_TRAIN_SECONDS = 10 * 60
 MAX_PARAMETERS = 1_000_000_000
+MAX_MODEL_BYTES = 100_000_000_000
 EXPECTED_KEYS = {"name", "accuracy", "parameters", "train_seconds", "date", "code_url"}
-# Compute (FLOPs) is counted only after a merge. Pull request results may carry the
-# key, but only empty: a pull request job that reports compute has been tampered with.
-OPTIONAL_KEYS = {"train_flops"}
+# Model size came later, so older pull request results do not have it.
+OPTIONAL_KEYS = {"model_bytes"}
+# Compute (FLOPs) is counted only after a merge. Pull request results may carry these
+# keys, but only empty: a pull request job that reports compute has been tampered with.
+COMPUTE_KEYS = {"train_flops", "predict_flops", "uncounted_ops"}
 
 
 class InvalidResult(Exception):
@@ -39,9 +42,10 @@ class InvalidResult(Exception):
 
 def check_result(raw: object, allowed_names: set[str]) -> dict:
     """Check one result from a pull request and return only the trusted fields."""
-    if not isinstance(raw, dict) or not EXPECTED_KEYS <= set(raw) <= EXPECTED_KEYS | OPTIONAL_KEYS:
+    allowed = EXPECTED_KEYS | OPTIONAL_KEYS | COMPUTE_KEYS
+    if not isinstance(raw, dict) or not EXPECTED_KEYS <= set(raw) <= allowed:
         raise InvalidResult("the result does not have the expected fields")
-    if raw.get("train_flops") is not None:
+    if any(raw.get(key) is not None for key in COMPUTE_KEYS):
         raise InvalidResult("compute is counted after the merge, not on pull requests")
 
     name = raw["name"]
@@ -63,12 +67,27 @@ def check_result(raw: object, allowed_names: set[str]) -> dict:
     if not is_number or not 0 <= seconds <= MAX_TRAIN_SECONDS:
         raise InvalidResult(f"training time must be from 0 to {MAX_TRAIN_SECONDS} seconds")
 
-    return {
+    trusted = {
         "name": name,
         "accuracy": round(float(accuracy), 4),
         "parameters": parameters,
         "train_seconds": round(float(seconds), 1),
     }
+    size = raw.get("model_bytes")
+    if size is not None:
+        if type(size) is not int or not 0 <= size <= MAX_MODEL_BYTES:
+            raise InvalidResult("model size must be a whole number of bytes, 0 or more")
+        trusted["model_bytes"] = size
+    return trusted
+
+
+def readable_bytes(size: int) -> str:
+    """188160000 -> "188 MB", the same short form as the leaderboard page."""
+    for suffix, unit in (("TB", 1e12), ("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+        if size >= unit:
+            value = size / unit
+            return f"{value:.1f} {suffix}" if value < 10 else f"{value:.0f} {suffix}"
+    return f"{size} B"
 
 
 def read_pr_results(folder: Path, allowed_names: set[str]) -> list[dict]:
@@ -126,9 +145,10 @@ def comment(results: list[dict], leaderboard_url: str) -> str:
         return "I could not score this pull request. Open the Check run's log to see why."
     lines = ["Here is the score for this pull request:", ""]
     for r in results:
+        size = f", {readable_bytes(r['model_bytes'])} model" if "model_bytes" in r else ""
         lines.append(
             f"- **{r['name']}**: {r['accuracy']:.2%} test accuracy, "
-            f"{r['parameters']:,} parameters, {r['train_seconds']:.0f} seconds of training"
+            f"{r['parameters']:,} parameters{size}, {r['train_seconds']:.0f} seconds of training"
         )
     lines += [
         "",

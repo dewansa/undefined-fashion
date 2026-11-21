@@ -6,17 +6,28 @@ a shirt, a sneaker, a bag, and so on. Then see how you rank against your classma
 **Leaderboard:** https://dewansa.github.io/undefined-fashion/
 
 Every model is scored on 10,000 test images it has never seen. The leaderboard shows
-four numbers for each submission:
+these numbers for each submission:
 
 - **Test accuracy:** how many test images the model labels correctly. Higher is better.
 - **Parameters:** how many numbers the model learns by gradient descent. Smaller is neater.
   Values stored with `register_buffer` (for example, class averages) are not counted, so a
   model can have 0.
+- **Size:** all the memory the trained model holds on to, in bytes. Parameters count, and
+  so do buffers and any other tensor the model keeps, in an attribute, a list or a dict.
+  A model that stores all the training images is as big as those images (about 188 MB).
 - **Compute:** how much arithmetic your `train()` function did, counted in FLOPs
   (floating-point operations). One multiply or add is one FLOP, so 225 GFLOP is
   225 billion. It counts the matrix multiplies and convolutions of every forward and
-  backward pass, and skips cheap steps such as ReLU. Unlike time, it is the same on
+  backward pass, and also linear algebra (`torch.linalg.solve`, `lstsq`, `eigh`, `svd`,
+  ...), distances (`torch.cdist`) and sorting. It skips cheap steps such as ReLU. Unlike time, it is the same on
   every computer. Your code is not changed to count it: the counter only watches.
+- **Compute per image:** the same count for labelling one test image with the trained
+  model. A model can be cheap to train and costly to use, like one that compares each
+  test image with every training image.
+
+  A compute count marked **\*** may be too low. Your code ran operations the counter has
+  no formula for, such as `torch.linalg.matrix_exp`. Point at the number on
+  the leaderboard to see which ones. `uv run score ... --flops` lists them too.
 - **Training time:** how long your `train()` function ran on GitHub's computer.
 
 The chart on the leaderboard draws a line through the **best trade-offs**: submissions

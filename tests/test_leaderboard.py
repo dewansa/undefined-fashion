@@ -12,6 +12,7 @@ from fashion.leaderboard import (
     check_result,
     comment,
     read_pr_results,
+    readable_bytes,
     remove_closed_pr_rows,
 )
 
@@ -49,6 +50,11 @@ def test_good_result_is_kept() -> None:
         {"train_seconds": -1},
         {"extra": "field"},
         {"train_flops": 1000},  # compute is only counted after the merge
+        {"predict_flops": 10},
+        {"uncounted_ops": ["aten.topk"]},
+        {"model_bytes": -1},
+        {"model_bytes": 1.5},
+        {"model_bytes": "4000"},
     ],
 )
 def test_bad_results_are_rejected(change: dict) -> None:
@@ -59,6 +65,18 @@ def test_bad_results_are_rejected(change: dict) -> None:
 @pytest.mark.parametrize("flops", [{}, {"train_flops": None}], ids=["older scorer", "empty"])
 def test_pull_request_results_without_compute_are_kept(flops: dict) -> None:
     assert check_result({**GOOD, **flops}, {"alice"})["accuracy"] == 0.8765
+
+
+def test_model_size_is_kept_and_shown() -> None:
+    good = check_result({**GOOD, "model_bytes": 188_160_000}, {"alice"})
+    assert good["model_bytes"] == 188_160_000
+    assert "188 MB model" in comment([good], "https://example.com/")
+
+
+def test_readable_bytes() -> None:
+    assert readable_bytes(0) == "0 B"
+    assert readable_bytes(203_560) == "204 kB"
+    assert readable_bytes(1_250_000) == "1.2 MB"
 
 
 def test_comment_says_when_compute_is_counted() -> None:
