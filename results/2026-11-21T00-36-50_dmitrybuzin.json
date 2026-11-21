@@ -1,8 +1,0 @@
-{
-  "name": "dmitrybuzin",
-  "accuracy": 0.9014,
-  "parameters": 109386,
-  "train_seconds": 43.3,
-  "date": "2026-11-21T00:36:50+00:00",
-  "code_url": "https://github.com/dewansa/undefined-fashion/blob/193b24e286c8e4f255a8dd3214a4f04f04941354/submissions/dmitrybuzin/model.py"
-}
