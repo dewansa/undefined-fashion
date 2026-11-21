@@ -28,6 +28,9 @@ MAX_FILE_BYTES = 10_000
 MAX_TRAIN_SECONDS = 10 * 60
 MAX_PARAMETERS = 1_000_000_000
 EXPECTED_KEYS = {"name", "accuracy", "parameters", "train_seconds", "date", "code_url"}
+# Compute (FLOPs) is counted only after a merge. Pull request results may carry the
+# key, but only empty: a pull request job that reports compute has been tampered with.
+OPTIONAL_KEYS = {"train_flops"}
 
 
 class InvalidResult(Exception):
@@ -36,8 +39,10 @@ class InvalidResult(Exception):
 
 def check_result(raw: object, allowed_names: set[str]) -> dict:
     """Check one result from a pull request and return only the trusted fields."""
-    if not isinstance(raw, dict) or set(raw) != EXPECTED_KEYS:
+    if not isinstance(raw, dict) or not EXPECTED_KEYS <= set(raw) <= EXPECTED_KEYS | OPTIONAL_KEYS:
         raise InvalidResult("the result does not have the expected fields")
+    if raw.get("train_flops") is not None:
+        raise InvalidResult("compute is counted after the merge, not on pull requests")
 
     name = raw["name"]
     if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name):
@@ -128,7 +133,8 @@ def comment(results: list[dict], leaderboard_url: str) -> str:
     lines += [
         "",
         f"It is on the [leaderboard]({leaderboard_url}) as *not reviewed*. "
-        "It becomes reviewed when the teacher merges this pull request.",
+        "When the teacher merges this pull request, it becomes reviewed and its "
+        "compute (FLOPs) is counted.",
     ]
     return "\n".join(lines)
 

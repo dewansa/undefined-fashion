@@ -10,6 +10,7 @@ from fashion.leaderboard import (
     add_pr_rows,
     all_rows,
     check_result,
+    comment,
     read_pr_results,
     remove_closed_pr_rows,
 )
@@ -47,11 +48,23 @@ def test_good_result_is_kept() -> None:
         {"train_seconds": 601},
         {"train_seconds": -1},
         {"extra": "field"},
+        {"train_flops": 1000},  # compute is only counted after the merge
     ],
 )
 def test_bad_results_are_rejected(change: dict) -> None:
     with pytest.raises(InvalidResult):
         check_result({**GOOD, **change}, {"alice"})
+
+
+@pytest.mark.parametrize("flops", [{}, {"train_flops": None}], ids=["older scorer", "empty"])
+def test_pull_request_results_without_compute_are_kept(flops: dict) -> None:
+    assert check_result({**GOOD, **flops}, {"alice"})["accuracy"] == 0.8765
+
+
+def test_comment_says_when_compute_is_counted() -> None:
+    text = comment([check_result(GOOD, {"alice"})], "https://example.com/")
+    assert "87.65%" in text
+    assert "compute (FLOPs) is counted" in text
 
 
 def test_unreadable_and_huge_files_are_skipped(tmp_path: Path) -> None:
@@ -82,3 +95,9 @@ def test_closed_pull_request_rows_are_removed(tmp_path: Path) -> None:
 def test_merged_rows_are_reviewed(tmp_path: Path) -> None:
     (tmp_path / "2026-01-02T03-04-05_alice.json").write_text(json.dumps(GOOD))
     assert all_rows(tmp_path)[0]["reviewed"] is True
+
+
+def test_merged_rows_keep_their_compute(tmp_path: Path) -> None:
+    row = {**GOOD, "train_flops": 562_200_000_000}
+    (tmp_path / "2026-01-02T03-04-05_alice.json").write_text(json.dumps(row))
+    assert all_rows(tmp_path)[0]["train_flops"] == 562_200_000_000

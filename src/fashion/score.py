@@ -4,8 +4,11 @@ Run it like this:
 
     uv run score submissions/<your-github-name>
 
+Add `--flops` to also count the training compute (FLOPs). That trains each
+submission a second time, so it takes longer.
+
 GitHub runs the same command on pull requests and after merges, with `--save`
-to keep the results for the leaderboard.
+to keep the results for the leaderboard. After merges it also adds `--flops`.
 """
 
 import argparse
@@ -24,10 +27,13 @@ from pathlib import Path
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.flop_counter import FlopCounterMode
 
 from fashion import data
 
 TIME_LIMIT_SECONDS = 10 * 60
+# Counting slows training down 2 to 6 times, so the counting run gets more time.
+COUNT_LIMIT_SECONDS = 30 * 60
 
 type TrainFunction = Callable[[Dataset], nn.Module]
 
@@ -44,6 +50,7 @@ class Result:
     train_seconds: float
     date: str
     code_url: str | None = None
+    train_flops: int | None = None  # None when compute was not counted
 
 
 def load_train_function(folder: Path) -> TrainFunction:
@@ -111,6 +118,38 @@ def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters())
 
 
+def count_flops(
+    train: TrainFunction, train_set: Dataset, limit: float = COUNT_LIMIT_SECONDS
+) -> int | None:
+    """Train again inside PyTorch's FLOP counter and return the training compute.
+
+    The counter adds up the floating-point operations of every matrix multiply and
+    convolution, forward and backward, including any validation inside train(). It
+    skips cheap elementwise work such as ReLU or optimizer steps. The submission's
+    code is not changed: the counter only watches the operations as they run.
+
+    Counting slows training down, so this is a separate run from the timed one, with
+    its own limit. If it does not finish, the result has no compute (None).
+    """
+    counter = FlopCounterMode(display=False)
+    try:
+        with counter:
+            train_with_time_limit(train, train_set, limit)
+    except SubmissionError as error:
+        print(f"Could not count the compute: {error}", file=sys.stderr)
+        return None
+    return counter.get_total_flops()
+
+
+def readable_flops(flops: int) -> str:
+    """225000000000 -> "225 GFLOP", the same short form as the leaderboard page."""
+    for suffix, size in (("P", 1e15), ("T", 1e12), ("G", 1e9), ("M", 1e6), ("k", 1e3)):
+        if flops >= size:
+            value = flops / size
+            return f"{value:.1f} {suffix}FLOP" if value < 10 else f"{value:.0f} {suffix}FLOP"
+    return f"{flops} FLOP"
+
+
 def accuracy(model: nn.Module, test_set: Dataset) -> float:
     """The share of test images the model labels correctly, from 0 to 1."""
     model = model.to("cpu").eval()
@@ -140,15 +179,15 @@ def code_url(name: str) -> str | None:
     return f"{server}/{repo}/blob/{sha}/submissions/{name}/model.py"
 
 
-def score(folder: Path, limit: float = TIME_LIMIT_SECONDS) -> Result:
-    """Train one submission and measure it."""
+def score(folder: Path, limit: float = TIME_LIMIT_SECONDS, flops: bool = False) -> Result:
+    """Train one submission and measure it. With flops=True, also count its compute."""
     train = load_train_function(folder)
     # Load both sets before training. Downloading the first time is not counted as
     # training time, and the test images are already in memory before student code runs.
     train_set = data.train_set()
     test_set = data.test_set()
     model, seconds = train_with_time_limit(train, train_set, limit)
-    return Result(
+    result = Result(
         name=folder.name,
         accuracy=round(accuracy(model, test_set), 4),
         parameters=count_parameters(model),
@@ -156,6 +195,9 @@ def score(folder: Path, limit: float = TIME_LIMIT_SECONDS) -> Result:
         date=datetime.now(UTC).isoformat(timespec="seconds"),
         code_url=code_url(folder.name),
     )
+    if flops:
+        result.train_flops = count_flops(train, train_set)
+    return result
 
 
 def save(result: Result, results_dir: Path) -> Path:
@@ -171,12 +213,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train submissions and print their scores.")
     parser.add_argument("folders", type=Path, nargs="+", help="for example: submissions/baseline")
     parser.add_argument("--save", type=Path, metavar="DIR", help="also save the results here")
+    parser.add_argument(
+        "--flops",
+        action="store_true",
+        help="also count the training compute (FLOPs); trains each submission a second time",
+    )
     args = parser.parse_args()
 
     failed = []
     for folder in args.folders:
         try:
-            result = score(folder)
+            result = score(folder, flops=args.flops)
         except SubmissionError as error:
             print(f"Error in {folder}: {error}", file=sys.stderr)
             failed.append(folder.name)
@@ -187,6 +234,8 @@ def main() -> None:
         print(f"Test accuracy:  {result.accuracy:.2%}")
         print(f"Parameters:     {result.parameters:,}")
         print(f"Training time:  {result.train_seconds:.0f} seconds")
+        if result.train_flops is not None:
+            print(f"Compute:        {readable_flops(result.train_flops)}")
         if args.save:
             print(f"Saved to:       {save(result, args.save)}")
 

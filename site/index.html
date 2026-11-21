@@ -36,7 +36,7 @@
     a { color: var(--accent); }
     .scroll { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+    th, td { padding: 8px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
     th { cursor: pointer; user-select: none; font-weight: 600; }
     th:hover { color: var(--accent); }
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
@@ -53,6 +53,19 @@
     .chart .grid { stroke: var(--line); }
     .chart .dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
     .chart .dot.pending { fill: var(--bg); stroke: var(--accent); }
+    .chart .dot.off { fill: var(--muted); opacity: 0.6; }
+    .chart .dot.off.pending { fill: var(--bg); stroke: var(--muted); opacity: 1; }
+    .chart .frontier { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0.5; }
+    .chart .label { fill: var(--text); pointer-events: none; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; stroke-linejoin: round; }
+    .chart .label.off { fill: var(--muted); }
+    .chart .zero { stroke: var(--line); stroke-dasharray: 3 3; }
+    .switch { display: inline-flex; margin: 4px 0 12px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .switch label { margin: 0; padding: 4px 12px; font-size: 14px; }
+    .switch label + label { border-left: 1px solid var(--line); }
+    .switch input { position: absolute; opacity: 0; pointer-events: none; }
+    .switch label:has(input:checked) { background: var(--accent); color: var(--bg); }
+    .switch label:has(input:focus-visible) { outline: 2px solid var(--text); outline-offset: -2px; }
+    .note { font-size: 14px; margin-top: -24px; }
     .chart .point:hover .dot, .chart .point:focus .dot { r: 7; }
     .chart .point { outline: none; }
     .chart .point:focus-visible .dot { stroke: var(--text); }
@@ -72,11 +85,20 @@
      Click a column name to sort.</p>
   <label><input type="checkbox" id="show-pending" checked> Show scores that are not reviewed yet</label>
 
-  <h2>Accuracy and training time</h2>
-  <p>Each dot is one row of the table. The top left is best: high accuracy after a short training.
+  <h2>Accuracy and cost</h2>
+  <p>Each dot is one row of the table. The top left is best: high accuracy for little cost.
+     The line joins the <strong>best trade-offs</strong>: rows that no other row beats on both
+     accuracy and cost. <em>Compute</em> counts the arithmetic (FLOPs) your <code>train()</code> did.
+     Unlike time, it is the same on every computer.
      <span class="key">●</span> reviewed, <span class="key">○</span> not reviewed.
-     Point at a dot to see whose it is, and click it to see the code.</p>
+     Point at a dot for details, and click it to see the code.</p>
+  <div class="switch" role="radiogroup" aria-label="Cost shown on the chart">
+    <label><input type="radio" name="metric" value="train_flops" checked> Compute</label>
+    <label><input type="radio" name="metric" value="train_seconds"> Training time</label>
+    <label><input type="radio" name="metric" value="parameters"> Parameters</label>
+  </div>
   <div class="chart" id="chart"><div class="tip" id="tip" hidden></div></div>
+  <p class="note" id="chart-note" hidden></p>
 
   <div class="scroll">
     <table>
@@ -86,12 +108,13 @@
           <th data-key="name">Student</th>
           <th data-key="accuracy" class="num">Test accuracy</th>
           <th data-key="parameters" class="num">Parameters</th>
-          <th data-key="train_seconds" class="num">Training time</th>
-          <th data-key="date">Date</th>
+          <th data-key="train_flops" class="num" title="Arithmetic operations (FLOPs) during train()">Compute</th>
+          <th data-key="train_seconds" class="num" title="Training time">Time</th>
+          <th data-key="date">Date (UTC)</th>
           <th data-key="reviewed">Status</th>
         </tr>
       </thead>
-      <tbody id="rows"><tr><td colspan="7">Loading…</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="8">Loading…</td></tr></tbody>
     </table>
   </div>
 
@@ -126,59 +149,180 @@
       return { low, high, ticks };
     }
 
-    function drawChart(shown) {
+    // Big numbers in short form: 225000000000 -> "225 G".
+    function short(n) {
+      if (n === 0) return "0";
+      for (const [suffix, size] of [["P", 1e15], ["T", 1e12], ["G", 1e9], ["M", 1e6], ["k", 1e3]]) {
+        if (n >= size) {
+          const value = n / size;
+          return (value < 10 ? Number(value.toFixed(1)) : Math.round(value)) + " " + suffix;
+        }
+      }
+      return String(Math.round(n));
+    }
+
+    function flops(n) {
+      if (n == null) return "—";
+      return n === 0 ? "≈ 0" : short(n) + "FLOP";
+    }
+
+    // What the chart's x-axis can show. Log scales spread out values that differ 1000-fold.
+    const METRICS = {
+      train_flops: { title: "Compute (FLOPs, log scale)", log: true, tick: short, tip: (r) => flops(r.train_flops) },
+      train_seconds: { title: "Training time (seconds)", log: false, tick: String, tip: (r) => Math.round(r.train_seconds) + " s" },
+      parameters: { title: "Parameters (log scale)", log: true, tick: short, tip: (r) => r.parameters.toLocaleString("en-US") + " parameters" },
+    };
+    let metric = "train_flops";
+
+    // The best trade-offs: rows that no other row beats on both accuracy and cost.
+    // Walk from the cheapest row up, keeping each one that is more accurate than all cheaper ones.
+    function bestTradeOffs(rows) {
+      const cheapestFirst = [...rows].sort((a, b) => a[metric] - b[metric] || b.accuracy - a.accuracy);
+      const best = [];
+      for (const r of cheapestFirst) {
+        if (best.length === 0 || r.accuracy > best.at(-1).accuracy) best.push(r);
+      }
+      return best;
+    }
+
+    // Names next to the dots, so nobody has to point at them (hard on a phone).
+    // Most important first: the best trade-offs, then the most accurate. A name that would
+    // cover another name, a dot or the chart's edge is left out; the tooltip and table still have it.
+    function labelDots(plot, shown, best, x, y, area, obstacles) {
+      const taken = obstacles.map((t) => t.getBBox());
+      shown.forEach((r) => taken.push({ x: x(r[metric]) - 6, y: y(r.accuracy * 100) - 6, width: 12, height: 12 }));
+      // Dots on (almost) the same spot share one label.
+      const groups = [];
+      const others = shown.filter((r) => !best.includes(r)).sort((a, b) => b.accuracy - a.accuracy);
+      [...best, ...others].forEach((r) => {
+        const cx = x(r[metric]);
+        const cy = y(r.accuracy * 100);
+        const near = groups.find((g) => Math.abs(g.cx - cx) < 4 && Math.abs(g.cy - cy) < 4);
+        if (!near) groups.push({ cx, cy, names: [r.name], onLine: best.includes(r) });
+        else if (!near.names.includes(r.name)) near.names.push(r.name);
+      });
+      const overlaps = (a, b) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+      groups.forEach((g) => {
+        const text = svg("text", { class: g.onLine ? "label" : "label off" });
+        text.textContent = g.names.join(", ");
+        plot.append(text);
+        const right = [g.cx + 9, g.cy + 4, "start"];
+        const left = [g.cx - 9, g.cy + 4, "end"];
+        const above = [g.cx, g.cy - 10, "middle"];
+        const below = [g.cx, g.cy + 19, "middle"];
+        // The line leaves a best trade-off to the right, so try above and left of those first.
+        const spots = g.onLine ? [above, left, below, right] : [right, left, above, below];
+        const fits = spots.some(([sx, sy, anchor]) => {
+          text.setAttribute("x", sx);
+          text.setAttribute("y", sy);
+          text.setAttribute("text-anchor", anchor);
+          const box = text.getBBox();
+          const inside = box.x >= area.left && box.x + box.width <= area.right && box.y >= area.top && box.y + box.height <= area.bottom;
+          return inside && !taken.some((t) => overlaps(box, t));
+        });
+        if (fits) {
+          const { x: bx, y: by, width, height } = text.getBBox();
+          taken.push({ x: bx, y: by, width, height });
+        } else {
+          text.remove();
+        }
+      });
+    }
+
+    function drawChart(all) {
       const chart = document.getElementById("chart");
       const tip = document.getElementById("tip");
+      const note = document.getElementById("chart-note");
+      const m = METRICS[metric];
       chart.querySelector("svg")?.remove();
       tip.hidden = true;
+
+      // Rows without a compute count (older rows, or not counted yet) cannot be placed.
+      const shown = all.filter((r) => r[metric] != null);
+      const missing = all.length - shown.length;
+      note.hidden = missing === 0;
+      note.textContent = `${missing} ${missing === 1 ? "row has" : "rows have"} no compute count yet, so ${missing === 1 ? "it is" : "they are"} not on the chart.`;
       if (shown.length === 0) return;
 
       const width = chart.clientWidth;
-      const height = Math.min(320, Math.round(width * 0.7));
+      const height = Math.min(340, Math.round(width * 0.7));
       const margin = { top: 24, right: 12, bottom: 44, left: 44 };
-      // A little room around the dots, so none sits on the edge of the chart.
-      const xAxis = axis(0, Math.max(...shown.map((r) => r.train_seconds)) * 1.05);
+      const right = width - margin.right;
       const yAxis = axis(
         Math.min(...shown.map((r) => r.accuracy * 100)) - 0.5,
         Math.max(...shown.map((r) => r.accuracy * 100)) + 0.5,
       );
-      const x = (seconds) => margin.left + ((seconds - xAxis.low) / (xAxis.high - xAxis.low)) * (width - margin.left - margin.right);
       const y = (percent) => height - margin.bottom - ((percent - yAxis.low) / (yAxis.high - yAxis.low)) * (height - margin.top - margin.bottom);
 
-      const plot = svg("svg", { width, height, role: "img", "aria-label": "Test accuracy against training time. The table below has the same data." });
+      // x: a straight scale for seconds; powers of ten for compute and parameters.
+      // A log scale has no place for 0, so zeros get their own spot at the left edge.
+      let x, xTicks;
+      const values = shown.map((r) => r[metric]);
+      const hasZero = m.log && values.some((v) => v === 0);
+      if (m.log) {
+        const positive = values.filter((v) => v > 0);
+        const low = positive.length ? Math.floor(Math.log10(Math.min(...positive))) : 0;
+        let high = positive.length ? Math.ceil(Math.log10(Math.max(...positive))) : 1;
+        if (high <= low) high = low + 1;
+        const left = margin.left + (hasZero ? 40 : 0);
+        x = (v) => v === 0 ? margin.left + 12 : left + ((Math.log10(v) - low) / (high - low)) * (right - left);
+        xTicks = [];
+        for (let e = low; e <= high; e++) xTicks.push(10 ** e);
+        if (hasZero) xTicks.unshift(0);
+      } else {
+        const xAxis = axis(0, Math.max(...values) * 1.05);
+        x = (v) => margin.left + ((v - xAxis.low) / (xAxis.high - xAxis.low)) * (right - margin.left);
+        xTicks = xAxis.ticks;
+      }
+
+      const plot = svg("svg", { width, height, role: "img", "aria-label": `Test accuracy against ${m.title}. The table below has the same data.` });
       yAxis.ticks.forEach((t) => {
-        plot.append(svg("line", { class: "grid", x1: margin.left, x2: width - margin.right, y1: y(t), y2: y(t) }));
+        plot.append(svg("line", { class: "grid", x1: margin.left, x2: right, y1: y(t), y2: y(t) }));
         const label = svg("text", { x: margin.left - 8, y: y(t) + 4, "text-anchor": "end" });
         label.textContent = t + "%";
         plot.append(label);
       });
-      xAxis.ticks.forEach((t) => {
+      if (hasZero) {
+        const gap = margin.left + 30;
+        plot.append(svg("line", { class: "zero", x1: gap, x2: gap, y1: margin.top, y2: height - margin.bottom }));
+      }
+      xTicks.forEach((t) => {
         const label = svg("text", { x: x(t), y: height - margin.bottom + 18, "text-anchor": "middle" });
-        label.textContent = t;
+        label.textContent = m.tick(t);
         plot.append(label);
       });
       const yTitle = svg("text", { x: margin.left - 8, y: 12 });
       yTitle.textContent = "Test accuracy";
-      const xTitle = svg("text", { x: width - margin.right, y: height - 6, "text-anchor": "end" });
-      xTitle.textContent = "Training time (seconds)";
+      const xTitle = svg("text", { x: right, y: height - 6, "text-anchor": "end" });
+      xTitle.textContent = m.title;
       plot.append(yTitle, xTitle);
 
-      shown.forEach((r) => {
+      // The staircase through the best trade-offs: across to the next cost, then up.
+      const best = bestTradeOffs(shown);
+      let line = `M ${x(best[0][metric])} ${y(best[0].accuracy * 100)}`;
+      best.slice(1).forEach((r) => { line += ` H ${x(r[metric])} V ${y(r.accuracy * 100)}`; });
+      plot.append(svg("path", { class: "frontier", d: line }));
+
+      // Draw the best trade-offs last, so they sit on top.
+      const order = [...shown.filter((r) => !best.includes(r)), ...best];
+      order.forEach((r) => {
+        const onLine = best.includes(r);
         const point = svg("a", { class: "point", tabindex: 0 });
         if (r.code_url) point.setAttribute("href", r.code_url);
-        const cx = x(r.train_seconds);
+        const cx = x(r[metric]);
         const cy = y(r.accuracy * 100);
         // A bigger see-through circle makes small dots easy to point at.
         point.append(
           svg("circle", { cx, cy, r: 12, fill: "transparent" }),
-          svg("circle", { cx, cy, r: 5, class: r.reviewed ? "dot" : "dot pending" }),
+          svg("circle", { cx, cy, r: 5, class: "dot" + (onLine ? "" : " off") + (r.reviewed ? "" : " pending") }),
         );
         const show = () => {
           tip.replaceChildren();
           const name = document.createElement("strong");
           name.textContent = r.name;
           tip.append(name, document.createElement("br"),
-            `${(r.accuracy * 100).toFixed(2)}% in ${Math.round(r.train_seconds)} s`);
+            `${(r.accuracy * 100).toFixed(2)}% with ${m.tip(r)}`);
+          if (onLine) tip.append(document.createElement("br"), "a best trade-off");
           if (!r.reviewed) tip.append(document.createElement("br"), "not reviewed");
           tip.hidden = false;
           // Keep the tip inside the chart, above the dot.
@@ -193,7 +337,9 @@
         point.addEventListener("blur", hide);
         plot.append(point);
       });
-      chart.prepend(plot);
+      chart.prepend(plot);  // in the page first, so the labels can be measured
+      const area = { left: margin.left, right, top: 0, bottom: height - margin.bottom };
+      labelDots(plot, shown, best, x, y, area, [yTitle]);
     }
 
     function render() {
@@ -204,6 +350,8 @@
       const byAccuracy = [...shown].sort((a, b) => b.accuracy - a.accuracy);
       const rank = new Map(shown.map((r) => [r, byAccuracy.findIndex((x) => x.accuracy === r.accuracy) + 1]));
       const rows = shown.sort((a, b) => {
+        // Rows without a value (older rows have no compute) go last either way.
+        if (a[sortKey] == null || b[sortKey] == null) return (a[sortKey] == null) - (b[sortKey] == null);
         const order = a[sortKey] < b[sortKey] ? -1 : a[sortKey] > b[sortKey] ? 1 : 0;
         return descending ? -order : order;
       });
@@ -227,8 +375,9 @@
           name,
           cell((r.accuracy * 100).toFixed(2) + "%", "num"),
           cell(r.parameters.toLocaleString("en-US"), "num"),
+          cell(flops(r.train_flops), "num"),
           cell(Math.round(r.train_seconds) + " s", "num"),
-          cell(r.date.slice(0, 16).replace("T", " ") + " UTC"),
+          cell(r.date.slice(0, 16).replace("T", " ")),
         );
         const status = cell("");
         const badge = document.createElement("span");
@@ -238,10 +387,13 @@
         tr.append(status);
         body.append(tr);
       });
-      if (rows.length === 0) body.innerHTML = "<tr><td colspan='7'>No scores yet.</td></tr>";
+      if (rows.length === 0) body.innerHTML = "<tr><td colspan='8'>No scores yet.</td></tr>";
     }
 
     document.getElementById("show-pending").addEventListener("change", render);
+    document.querySelectorAll("input[name=metric]").forEach((input) => {
+      input.addEventListener("change", () => { metric = input.value; render(); });
+    });
     // Phones fire "resize" while scrolling, so draw again only when the width changes.
     let lastWidth = window.innerWidth;
     window.addEventListener("resize", () => {
@@ -263,9 +415,17 @@
     // "no-cache" asks the server for a newer file on every load, so new scores show up right away.
     fetch("results.json", { cache: "no-cache" })
       .then((response) => response.json())
-      .then((data) => { results = data; render(); })
+      .then((data) => {
+        results = data;
+        // Until some row has compute, start the chart on training time.
+        if (!results.some((r) => r.train_flops != null)) {
+          metric = "train_seconds";
+          document.querySelector("input[name=metric][value=train_seconds]").checked = true;
+        }
+        render();
+      })
       .catch(() => {
-        document.getElementById("rows").innerHTML = "<tr><td colspan='7'>Could not load the results.</td></tr>";
+        document.getElementById("rows").innerHTML = "<tr><td colspan='8'>Could not load the results.</td></tr>";
       });
   </script>
 </body>
