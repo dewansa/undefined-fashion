@@ -1,8 +1,0 @@
-{
-  "name": "yauheni_v1",
-  "accuracy": 0.8826,
-  "parameters": 50890,
-  "train_seconds": 17.6,
-  "date": "2026-11-19T12:01:33+00:00",
-  "code_url": "https://github.com/dewansa/undefined-fashion/blob/f94b4b57c1fc763d723815d8e1b9a406c5fe0379/submissions/yauheni_v1/model.py"
-}
